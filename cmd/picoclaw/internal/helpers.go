@@ -1,10 +1,12 @@
 package internal
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 const Logo = "🦞"
@@ -27,7 +29,11 @@ func GetConfigPath() string {
 }
 
 func LoadConfig() (*config.Config, error) {
-	return config.LoadConfig(GetConfigPath())
+	path := GetConfigPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		logger.WarnC("config", fmt.Sprintf("No config file found at %s, using defaults", path))
+	}
+	return config.LoadConfig(path)
 }
 
 // FormatVersion returns the version string with optional git commit
