@@ -236,6 +236,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 				splitIdx = smallerLen
 			}
 
+			// Ensure we split at a valid index to guarantee forward progress.
 			if splitIdx <= 0 {
 				splitIdx = 1
 			}
@@ -243,19 +244,31 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 			// Attempt to split using the determined index, ensuring code block integrity is maintained.
 			subChunks := channels.SplitMessage(chunk, splitIdx)
 
-			// Force a manual split if the message remains monolithic after the attempt.
+			// Safety fallback: If SplitMessage failed to shorten the chunk, force a manual split.
 			if len(subChunks) == 1 && subChunks[0] == chunk {
 				part1 := string(runeChunk[:splitIdx])
+				subChunks = []string{part1}
+
 				nextStart := splitIdx
 				if foundBreak && nextStart < len(runeChunk) {
 					nextStart++
 				}
-				part2 := string(runeChunk[nextStart:])
-				subChunks = []string{part1, part2}
+				if nextStart < len(runeChunk) {
+					part2 := string(runeChunk[nextStart:])
+					subChunks = append(subChunks, part2)
+				}
+			}
+
+			// Filter out empty chunks to avoid sending empty messages to Telegram.
+			nonEmpty := make([]string, 0, len(subChunks))
+			for _, s := range subChunks {
+				if s != "" {
+					nonEmpty = append(nonEmpty, s)
+				}
 			}
 
 			// Push sub-chunks back to the front of the queue
-			queue = append(subChunks, queue...)
+			queue = append(nonEmpty, queue...)
 			continue
 		}
 
