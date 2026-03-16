@@ -190,14 +190,71 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		htmlContent := markdownToTelegramHTML(chunk)
 
 		if len([]rune(htmlContent)) > 4096 {
-			ratio := float64(len([]rune(chunk))) / float64(len([]rune(htmlContent)))
+			runeChunk := []rune(chunk)
+			ratio := float64(len(runeChunk)) / float64(len([]rune(htmlContent)))
 			smallerLen := int(float64(4096) * ratio * 0.95) // 5% safety margin
-			if smallerLen < 100 {
-				smallerLen = 100
+
+			// Guarantee progress: if estimated length is >= chunk length, force it smaller
+			if smallerLen >= len(runeChunk) {
+				smallerLen = len(runeChunk) - 1
 			}
-			// Push sub-chunks back to the front of the queue for
-			// re-validation instead of sending them blindly.
-			subChunks := channels.SplitMessage(chunk, smallerLen)
+
+			if smallerLen <= 0 {
+				if err := c.sendHTMLChunk(ctx, chatID, threadID, htmlContent, chunk, replyToID); err != nil {
+					return err
+				}
+				replyToID = ""
+				continue
+			}
+
+			// Seek a natural break point (space or newline) to avoid splitting mid-word.
+			splitIdx := smallerLen
+			foundBreak := false
+
+			// Scan backwards from the target point to find the nearest whitespace.
+			for i := smallerLen; i >= 0; i-- {
+				if runeChunk[i] == ' ' || runeChunk[i] == '\n' || runeChunk[i] == '\t' || runeChunk[i] == '\r' {
+					splitIdx = i
+					foundBreak = true
+					break
+				}
+			}
+
+			// If no space was found behind, scan forward to find the next word boundary.
+			if !foundBreak {
+				for i := smallerLen; i < len(runeChunk); i++ {
+					if runeChunk[i] == ' ' || runeChunk[i] == '\n' || runeChunk[i] == '\t' || runeChunk[i] == '\r' {
+						splitIdx = i
+						foundBreak = true
+						break
+					}
+				}
+			}
+
+			// Fall back to a hard split if the entire block is monolithic (no spaces found).
+			if !foundBreak {
+				splitIdx = smallerLen
+			}
+
+			if splitIdx <= 0 {
+				splitIdx = 1
+			}
+
+			// Attempt to split using the determined index, ensuring code block integrity is maintained.
+			subChunks := channels.SplitMessage(chunk, splitIdx)
+
+			// Force a manual split if the message remains monolithic after the attempt.
+			if len(subChunks) == 1 && subChunks[0] == chunk {
+				part1 := string(runeChunk[:splitIdx])
+				nextStart := splitIdx
+				if foundBreak && nextStart < len(runeChunk) {
+					nextStart++
+				}
+				part2 := string(runeChunk[nextStart:])
+				subChunks = []string{part1, part2}
+			}
+
+			// Push sub-chunks back to the front of the queue
 			queue = append(subChunks, queue...)
 			continue
 		}
