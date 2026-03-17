@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mymmrac/telego"
+	ta "github.com/mymmrac/telego/telegoapi"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
 
@@ -291,7 +292,13 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 	editMsg := tu.EditMessageText(tu.ID(cid), mid, htmlContent)
 	editMsg.ParseMode = telego.ModeHTML
 	_, err = c.bot.EditMessageText(ctx, editMsg)
-	return err
+	if err != nil {
+		if tgErr, ok := err.(*ta.Error); ok {
+			return channels.ClassifySendError(tgErr.Response.ErrorCode, err)
+		}
+		return channels.ClassifyNetError(err)
+	}
+	return nil
 }
 
 // SendPlaceholder implements channels.PlaceholderCapable.
