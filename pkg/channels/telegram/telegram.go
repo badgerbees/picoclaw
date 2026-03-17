@@ -207,56 +207,15 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 				continue
 			}
 
-			// Seek a natural break point (space or newline) to avoid splitting mid-word.
-			splitIdx := smallerLen
-			foundBreak := false
+			// Use the estimated smaller length as a guide for SplitMessage.
+			// SplitMessage will find natural break points (newlines/spaces) and respect code blocks.
+			subChunks := channels.SplitMessage(chunk, smallerLen)
 
-			// Scan backwards from the target point to find the nearest whitespace.
-			for i := smallerLen; i >= 0; i-- {
-				if runeChunk[i] == ' ' || runeChunk[i] == '\n' || runeChunk[i] == '\t' || runeChunk[i] == '\r' {
-					splitIdx = i
-					foundBreak = true
-					break
-				}
-			}
-
-			// If no space was found behind, scan forward to find the next word boundary.
-			if !foundBreak {
-				for i := smallerLen; i < len(runeChunk); i++ {
-					if runeChunk[i] == ' ' || runeChunk[i] == '\n' || runeChunk[i] == '\t' || runeChunk[i] == '\r' {
-						splitIdx = i
-						foundBreak = true
-						break
-					}
-				}
-			}
-
-			// Fall back to a hard split if the entire block is monolithic (no spaces found).
-			if !foundBreak {
-				splitIdx = smallerLen
-			}
-
-			// Ensure we split at a valid index to guarantee forward progress.
-			if splitIdx <= 0 {
-				splitIdx = 1
-			}
-
-			// Attempt to split using the determined index, ensuring code block integrity is maintained.
-			subChunks := channels.SplitMessage(chunk, splitIdx)
-
-			// Safety fallback: If SplitMessage failed to shorten the chunk, force a manual split.
+			// Safety fallback: If SplitMessage failed to shorten the chunk, force a manual hard split.
 			if len(subChunks) == 1 && subChunks[0] == chunk {
-				part1 := string(runeChunk[:splitIdx])
-				subChunks = []string{part1}
-
-				nextStart := splitIdx
-				if foundBreak && nextStart < len(runeChunk) {
-					nextStart++
-				}
-				if nextStart < len(runeChunk) {
-					part2 := string(runeChunk[nextStart:])
-					subChunks = append(subChunks, part2)
-				}
+				part1 := string(runeChunk[:smallerLen])
+				part2 := string(runeChunk[smallerLen:])
+				subChunks = []string{part1, part2}
 			}
 
 			// Filter out empty chunks to avoid sending empty messages to Telegram.
