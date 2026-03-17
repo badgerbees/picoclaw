@@ -545,13 +545,23 @@ func (p *Provider) finalizeTools(tools []ToolDefinition, options map[string]any)
 		return tools
 	}
 
-	// 3. Sanitization / Explicit Force Path
-	// Build compatible map based on 'useStrict' decision
+	// 3. Sanitization / Explicit Force Path / Edge Case Handling
+	// Decide whether to use strict mode
 	useStrict := isNative
 	if hasForce {
-		useStrict = forceStrict
+		if forceStrict && !isNative {
+			// Non-native providers don't support strict mode, ignore user setting
+			log.Printf(
+				"openai_compat: strict_mode=true ignored for non-OpenAI provider %q (unsupported field)",
+				p.apiBase,
+			)
+			useStrict = false
+		} else {
+			useStrict = forceStrict
+		}
 	}
 
+	// Build compatible map based on 'useStrict' decision
 	out := make([]any, 0, len(tools))
 	for _, t := range tools {
 		toolMap := map[string]any{
