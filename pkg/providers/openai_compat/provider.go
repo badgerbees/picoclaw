@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -240,8 +241,9 @@ func (p *Provider) finalizeTools(tools []ToolDefinition, options map[string]any)
 	if hasForce {
 		if forceStrict && !isNative {
 			// Non-native providers don't support strict mode, ignore user setting
-			log.Printf(
-				"openai_compat: strict_mode=true ignored for non-OpenAI provider %q (unsupported field)",
+			slog.Warn(
+				"openai_compat: strict_mode=true ignored for non-OpenAI provider (unsupported field)",
+				"api_base",
 				p.apiBase,
 			)
 			useStrict = false
