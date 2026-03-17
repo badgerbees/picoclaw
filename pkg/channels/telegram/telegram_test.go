@@ -250,7 +250,7 @@ func TestSend_HTMLOverflow_WordBoundary(t *testing.T) {
 	// We want to force a split near index ~2600.
 	// Prefix of 430 bold units (6 chars each) = 2580 chars.
 	// Expansion per unit is 3 chars. 2580 + 430*3 = 3870.
-	prefix := strings.Repeat("**a** ", 430) 
+	prefix := strings.Repeat("**a** ", 430)
 	targetWord := "TARGETWORDTHATSTAYSTOGETHER"
 	suffix := strings.Repeat(" **b**", 250)
 	content := prefix + targetWord + suffix
@@ -264,12 +264,10 @@ func TestSend_HTMLOverflow_WordBoundary(t *testing.T) {
 
 	foundFullWord := false
 	for i, call := range caller.calls {
-		var params map[string]interface{}
+		var params map[string]any
 		_ = json.Unmarshal(call.Data.BodyRaw, &params)
 		text, _ := params["text"].(string)
-		
-		// The word might be wrapped in tags if we were unlucky, 
-		// but since it's plain text in our 'content', it should stay plain.
+
 		hasWord := strings.Contains(text, targetWord)
 		t.Logf("Chunk %d length: %d, contains target word: %v", i, len(text), hasWord)
 
