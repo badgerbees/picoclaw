@@ -653,6 +653,8 @@ func (c *TelegramChannel) downloadFileWithInfo(file *telego.File, ext string) st
 	filename := file.FilePath + ext
 	return utils.DownloadFile(url, filename, utils.DownloadOptions{
 		LoggerPrefix: "telegram",
+		Timeout:      60 * time.Second,
+		IdleTimeout:  30 * time.Second,
 	})
 }
 

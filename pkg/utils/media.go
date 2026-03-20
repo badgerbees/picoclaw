@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -52,6 +53,7 @@ func SanitizeFilename(filename string) string {
 // DownloadOptions holds optional parameters for downloading files
 type DownloadOptions struct {
 	Timeout      time.Duration
+	IdleTimeout  time.Duration // max time to wait for a single chunk read
 	ExtraHeaders map[string]string
 	LoggerPrefix string
 	ProxyURL     string
@@ -63,6 +65,9 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	// Set defaults
 	if opts.Timeout == 0 {
 		opts.Timeout = 60 * time.Second
+	}
+	if opts.IdleTimeout == 0 {
+		opts.IdleTimeout = 30 * time.Second // Default 30s idle timeout
 	}
 	if opts.LoggerPrefix == "" {
 		opts.LoggerPrefix = "utils"
@@ -93,6 +98,13 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	for key, value := range opts.ExtraHeaders {
 		req.Header.Set(key, value)
 	}
+
+	// Wrap in an idle-timeout reader to detect stalls mid-stream.
+	// We use the request context as parent.
+	ctx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+
+	req = req.WithContext(ctx)
 
 	client := &http.Client{Timeout: opts.Timeout}
 	if opts.ProxyURL != "" {
@@ -135,10 +147,18 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	idleReader := &idleTimeoutReader{
+		r:       resp.Body,
+		timeout: opts.IdleTimeout,
+		cancel:  cancel,
+	}
+	idleReader.start()
+	defer idleReader.stop()
+
+	if _, err := io.Copy(out, idleReader); err != nil {
 		out.Close()
 		os.Remove(localPath)
-		logger.ErrorCF(opts.LoggerPrefix, "Failed to write file", map[string]any{
+		logger.ErrorCF(opts.LoggerPrefix, "Failed to write file (possible stall or timeout)", map[string]any{
 			"error": err.Error(),
 		})
 		return ""
@@ -156,4 +176,33 @@ func DownloadFileSimple(url, filename string) string {
 	return DownloadFile(url, filename, DownloadOptions{
 		LoggerPrefix: "media",
 	})
+}
+
+// idleTimeoutReader cancels a context if no data is read for a specified duration.
+type idleTimeoutReader struct {
+	r       io.ReadCloser
+	timeout time.Duration
+	cancel  context.CancelFunc
+	timer   *time.Timer
+}
+
+func (ir *idleTimeoutReader) start() {
+	if ir.timeout > 0 {
+		ir.timer = time.AfterFunc(ir.timeout, func() {
+			ir.cancel()
+		})
+	}
+}
+
+func (ir *idleTimeoutReader) stop() {
+	if ir.timer != nil {
+		ir.timer.Stop()
+	}
+}
+
+func (ir *idleTimeoutReader) Read(p []byte) (n int, err error) {
+	if ir.timer != nil {
+		ir.timer.Reset(ir.timeout)
+	}
+	return ir.r.Read(p)
 }
