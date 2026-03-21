@@ -13,6 +13,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/auth"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers/common"
 )
 
 const (
@@ -305,7 +306,9 @@ func buildCodexParams(
 	// and reuse prefix KV cache across calls with the same key.
 	// See: https://platform.openai.com/docs/guides/prompt-caching
 	if cacheKey, ok := options["prompt_cache_key"].(string); ok && cacheKey != "" {
-		params.PromptCacheKey = openai.Opt(cacheKey)
+		if common.IsOpenAINativeHost("https://chatgpt.com") {
+			params.PromptCacheKey = openai.Opt(cacheKey)
+		}
 	}
 
 	if len(tools) > 0 || enableWebSearch {

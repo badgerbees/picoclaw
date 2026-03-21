@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -101,7 +100,7 @@ func (p *Provider) buildRequestBody(
 
 	// When fallback uses a different provider (e.g. DeepSeek), that provider must not inject web_search_preview.
 	nativeSearch, _ := options["native_search"].(bool)
-	nativeSearch = nativeSearch && isNativeSearchHost(p.apiBase)
+	nativeSearch = nativeSearch && common.IsNativeSearchHost(p.apiBase)
 	if len(tools) > 0 || nativeSearch {
 		requestBody["tools"] = buildToolsList(tools, nativeSearch)
 		requestBody["tool_choice"] = "auto"
@@ -133,10 +132,14 @@ func (p *Provider) buildRequestBody(
 	// Prompt caching: pass a stable cache key so OpenAI can bucket requests
 	// with the same key and reuse prefix KV cache across calls.
 	// Prompt caching is only supported by OpenAI-native endpoints.
-	// Non-OpenAI providers reject unknown fields with 422 errors.
+	// Non-OpenAI providers (Volcano Engine, DeepSeek) reject unknown fields with 400/422.
 	if cacheKey, ok := options["prompt_cache_key"].(string); ok && cacheKey != "" {
-		if supportsPromptCacheKey(p.apiBase) {
+		if common.IsOpenAINativeHost(p.apiBase) {
 			requestBody["prompt_cache_key"] = cacheKey
+			// OpenAI also supports prompt_cache_retention (int)
+			if retention, ok := common.AsInt(options["prompt_cache_retention"]); ok {
+				requestBody["prompt_cache_retention"] = retention
+			}
 		}
 	}
 
@@ -408,27 +411,5 @@ func buildToolsList(tools []ToolDefinition, nativeSearch bool) []any {
 }
 
 func (p *Provider) SupportsNativeSearch() bool {
-	return isNativeSearchHost(p.apiBase)
-}
-
-func isNativeSearchHost(apiBase string) bool {
-	u, err := url.Parse(apiBase)
-	if err != nil {
-		return false
-	}
-	host := u.Hostname()
-	return host == "api.openai.com" || strings.HasSuffix(host, ".openai.azure.com")
-}
-
-// supportsPromptCacheKey reports whether the given API base is known to
-// support the prompt_cache_key request field. Currently only OpenAI's own
-// API and Azure OpenAI support this. All other OpenAI-compatible providers
-// (Mistral, Gemini, DeepSeek, Groq, etc.) reject unknown fields with 422 errors.
-func supportsPromptCacheKey(apiBase string) bool {
-	u, err := url.Parse(apiBase)
-	if err != nil {
-		return false
-	}
-	host := u.Hostname()
-	return host == "api.openai.com" || strings.HasSuffix(host, ".openai.azure.com")
+	return common.IsNativeSearchHost(p.apiBase)
 }

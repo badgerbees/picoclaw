@@ -378,3 +378,24 @@ func AsFloat(v any) (float64, bool) {
 		return 0, false
 	}
 }
+
+// IsOpenAINativeHost reports whether the given API base is known to
+// be a first-party OpenAI or Azure OpenAI endpoint. These endpoints
+// are known to support specialized OpenAI request fields that
+// third-party providers may reject with 400/422 errors.
+func IsOpenAINativeHost(apiBase string) bool {
+	u, err := url.Parse(apiBase)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "api.openai.com" ||
+		host == "chatgpt.com" ||
+		strings.HasSuffix(host, ".openai.azure.com")
+}
+
+// IsNativeSearchHost reports whether the given API base is known to
+// support the native web_search_preview tool type (OpenAI and Azure).
+func IsNativeSearchHost(apiBase string) bool {
+	return IsOpenAINativeHost(apiBase)
+}

@@ -823,6 +823,7 @@ func TestSupportsPromptCacheKey(t *testing.T) {
 	}{
 		{"https://api.openai.com/v1", true},
 		{"https://api.openai.com/v1/", true},
+		{"https://chatgpt.com/backend-api/v1", true},
 		{"https://myresource.openai.azure.com/openai/deployments/gpt-4", true},
 		{"https://eastus.openai.azure.com/v1", true},
 		{"https://api.mistral.ai/v1", false},
@@ -839,8 +840,8 @@ func TestSupportsPromptCacheKey(t *testing.T) {
 		{"not-a-url", false},
 	}
 	for _, tt := range tests {
-		if got := supportsPromptCacheKey(tt.apiBase); got != tt.want {
-			t.Errorf("supportsPromptCacheKey(%q) = %v, want %v", tt.apiBase, got, tt.want)
+		if got := common.IsOpenAINativeHost(tt.apiBase); got != tt.want {
+			t.Errorf("common.IsOpenAINativeHost(%q) = %v, want %v", tt.apiBase, got, tt.want)
 		}
 	}
 }
@@ -895,6 +896,7 @@ func TestIsNativeSearchHost(t *testing.T) {
 		want    bool
 	}{
 		{"https://api.openai.com/v1", true},
+		{"https://chatgpt.com/backend-api/v1", true},
 		{"https://myresource.openai.azure.com/openai/deployments/gpt-4", true},
 		{"https://api.mistral.ai/v1", false},
 		{"https://api.deepseek.com/v1", false},
@@ -903,8 +905,8 @@ func TestIsNativeSearchHost(t *testing.T) {
 		{"", false},
 	}
 	for _, tt := range tests {
-		if got := isNativeSearchHost(tt.apiBase); got != tt.want {
-			t.Errorf("isNativeSearchHost(%q) = %v, want %v", tt.apiBase, got, tt.want)
+		if got := common.IsNativeSearchHost(tt.apiBase); got != tt.want {
+			t.Errorf("common.IsNativeSearchHost(%q) = %v, want %v", tt.apiBase, got, tt.want)
 		}
 	}
 }
