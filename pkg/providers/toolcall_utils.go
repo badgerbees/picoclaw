@@ -43,48 +43,69 @@ func buildCLIToolsPrompt(tools []ToolDefinition) string {
 	return sb.String()
 }
 
-// NormalizeToolCall normalizes a ToolCall to ensure all fields are properly populated.
+// NormalizeToolCall normalizes a list of ToolCalls to ensure all fields are properly populated.
 // It handles cases where Name/Arguments might be in different locations (top-level vs Function)
-// and ensures both are populated consistently.
-func NormalizeToolCall(tc ToolCall) ToolCall {
-	normalized := tc
-
-	// Ensure Name is populated from Function if not set
-	if normalized.Name == "" && normalized.Function != nil {
-		normalized.Name = normalized.Function.Name
+// and ensures both are populated consistently and each ID is unique across the set.
+func NormalizeToolCall(calls []ToolCall) []ToolCall {
+	if len(calls) == 0 {
+		return calls
 	}
 
-	// Ensure Arguments is not nil
-	if normalized.Arguments == nil {
-		normalized.Arguments = map[string]any{}
+	used := make(map[string]bool)
+	result := make([]ToolCall, 0, len(calls))
+
+	for i := 0; i < len(calls); i++ {
+		tc := calls[i]
+
+		// 1. Field consistency normalization
+		// Ensure Name is populated from Function if not set
+		if tc.Name == "" && tc.Function != nil {
+			tc.Name = tc.Function.Name
+		}
+		// Ensure Arguments is not nil
+		if tc.Arguments == nil {
+			tc.Arguments = map[string]any{}
+		}
+		// Parse Arguments from Function.Arguments if not already set
+		if len(tc.Arguments) == 0 && tc.Function != nil && tc.Function.Arguments != "" {
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err == nil && parsed != nil {
+				tc.Arguments = parsed
+			}
+		}
+		// Ensure Function is populated with consistent values
+		argsJSON, _ := json.Marshal(tc.Arguments)
+		if tc.Function == nil {
+			tc.Function = &FunctionCall{
+				Name:      tc.Name,
+				Arguments: string(argsJSON),
+			}
+		} else {
+			if tc.Function.Name == "" {
+				tc.Function.Name = tc.Name
+			}
+			if tc.Name == "" {
+				tc.Name = tc.Function.Name
+			}
+			if tc.Function.Arguments == "" {
+				tc.Function.Arguments = string(argsJSON)
+			}
+		}
+
+		// 2. ID uniqueness normalization
+		id := strings.TrimSpace(tc.ID)
+		if id == "" || used[id] {
+			id = fmt.Sprintf("call_auto_%d", i)
+			// Suffix ensures no collision with an LLM's own IDs that might follow the same pattern
+			for used[id] {
+				id += "_x"
+			}
+		}
+		used[id] = true
+		tc.ID = id
+
+		result = append(result, tc)
 	}
 
-	// Parse Arguments from Function.Arguments if not already set
-	if len(normalized.Arguments) == 0 && normalized.Function != nil && normalized.Function.Arguments != "" {
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(normalized.Function.Arguments), &parsed); err == nil && parsed != nil {
-			normalized.Arguments = parsed
-		}
-	}
-
-	// Ensure Function is populated with consistent values
-	argsJSON, _ := json.Marshal(normalized.Arguments)
-	if normalized.Function == nil {
-		normalized.Function = &FunctionCall{
-			Name:      normalized.Name,
-			Arguments: string(argsJSON),
-		}
-	} else {
-		if normalized.Function.Name == "" {
-			normalized.Function.Name = normalized.Name
-		}
-		if normalized.Name == "" {
-			normalized.Name = normalized.Function.Name
-		}
-		if normalized.Function.Arguments == "" {
-			normalized.Function.Arguments = string(argsJSON)
-		}
-	}
-
-	return normalized
+	return result
 }
