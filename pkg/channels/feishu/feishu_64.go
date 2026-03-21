@@ -43,6 +43,7 @@ type FeishuChannel struct {
 	tokenCache *tokenCache // custom cache that supports invalidation
 
 	botOpenID atomic.Value // stores string; populated lazily for @mention detection
+	botName   atomic.Value // stores string; current display name from API
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -463,6 +464,15 @@ func (c *FeishuChannel) handleMessageReceive(ctx context.Context, event *larkim.
 
 		// Check if bot was mentioned
 		isMentioned := c.isBotMentioned(message)
+		if !isMentioned {
+			if bName, ok := c.botName.Load().(string); ok && bName != "" {
+				// Feishu mentions in raw content sometimes look like "@BotName" without proper metadata.
+				// Supporting name-based fallback reduces false negatives when config/display-names change.
+				if strings.Contains(strings.ToLower(content), "@"+strings.ToLower(bName)) {
+					isMentioned = true
+				}
+			}
+		}
 
 		// Strip mention placeholders from content before group trigger check
 		if len(message.Mentions) > 0 {
@@ -504,7 +514,8 @@ func (c *FeishuChannel) fetchBotOpenID(ctx context.Context) error {
 	var result struct {
 		Code int `json:"code"`
 		Bot  struct {
-			OpenID string `json:"open_id"`
+			OpenID  string `json:"open_id"`
+			AppName string `json:"app_name"`
 		} `json:"bot"`
 	}
 	if err := json.Unmarshal(resp.RawBody, &result); err != nil {
@@ -519,8 +530,13 @@ func (c *FeishuChannel) fetchBotOpenID(ctx context.Context) error {
 	}
 
 	c.botOpenID.Store(result.Bot.OpenID)
-	logger.InfoCF("feishu", "Fetched bot open_id from API", map[string]any{
+	if name := stringValue(&result.Bot.AppName); name != "" {
+		c.botName.Store(name)
+	}
+
+	logger.InfoCF("feishu", "Fetched bot identity from API", map[string]any{
 		"open_id": result.Bot.OpenID,
+		"name":    c.botName.Load(),
 	})
 	return nil
 }
