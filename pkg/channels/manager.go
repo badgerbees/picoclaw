@@ -405,17 +405,8 @@ func (m *Manager) initChannels(channels *config.ChannelsConfig) error {
 		m.initChannel("onebot", "OneBot")
 	}
 
-	if channels.WeCom.Enabled && channels.WeCom.Token() != "" {
+	if channels.WeCom.Enabled && channels.WeCom.BotID != "" && channels.WeCom.Secret() != "" {
 		m.initChannel("wecom", "WeCom")
-	}
-
-	if channels.WeComAIBot.Enabled && (channels.WeComAIBot.Token() != "" ||
-		(channels.WeComAIBot.Secret() != "" && channels.WeComAIBot.BotID != "")) {
-		m.initChannel("wecom_aibot", "WeCom AI Bot")
-	}
-
-	if channels.WeComApp.Enabled && channels.WeComApp.CorpID != "" {
-		m.initChannel("wecom_app", "WeCom App")
 	}
 
 	if channels.Weixin.Enabled && channels.Weixin.Token() != "" {
