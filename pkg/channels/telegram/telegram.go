@@ -375,9 +375,13 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 	}
 
 	if err != nil && isPostConnectError(err) {
-		logger.WarnCF("telegram", "EditMessage timed out or connection dropped; assuming it landed to prevent duplicate", map[string]any{
-			"error": err.Error(),
-		})
+		logger.WarnCF(
+			"telegram",
+			"EditMessage timed out or connection dropped; assuming it landed to prevent duplicate",
+			map[string]any{
+				"error": err.Error(),
+			},
+		)
 		return nil // Swallow the error to prevent Manager from sending a duplicate
 	}
 
