@@ -137,13 +137,14 @@ func (p *Provider) buildRequestBody(
 		}
 	}
 
-	// Prompt caching: pass a stable cache key so OpenAI can bucket requests
-	// with the same key and reuse prefix KV cache across calls.
-	// Prompt caching is only supported by OpenAI-native endpoints.
-	// Non-OpenAI providers reject unknown fields with 422 errors.
-	if cacheKey, ok := options["prompt_cache_key"].(string); ok && cacheKey != "" {
-		if supportsPromptCacheKey(p.apiBase) {
-			requestBody["prompt_cache_key"] = cacheKey
+	// Prompt caching: only supported by OpenAI-native/Azure/ChatGPT endpoints.
+	// Non-OpenAI providers (Mistral, Gemini, DeepSeek, etc.) reject these fields with 400/422.
+	if supportsPromptCacheKey(p.apiBase) {
+		if ck, ok := options["prompt_cache_key"].(string); ok && ck != "" {
+			requestBody["prompt_cache_key"] = ck
+		}
+		if cr, ok := options["prompt_cache_retention"].(string); ok && cr != "" {
+			requestBody["prompt_cache_retention"] = cr
 		}
 	}
 
@@ -430,7 +431,7 @@ func isNativeSearchHost(apiBase string) bool {
 		return false
 	}
 	host := u.Hostname()
-	return host == "api.openai.com" || strings.HasSuffix(host, ".openai.azure.com")
+	return host == "api.openai.com" || host == "chatgpt.com" || strings.HasSuffix(host, ".openai.azure.com")
 }
 
 // supportsPromptCacheKey reports whether the given API base is known to
@@ -443,5 +444,5 @@ func supportsPromptCacheKey(apiBase string) bool {
 		return false
 	}
 	host := u.Hostname()
-	return host == "api.openai.com" || strings.HasSuffix(host, ".openai.azure.com")
+	return host == "api.openai.com" || host == "chatgpt.com" || strings.HasSuffix(host, ".openai.azure.com")
 }
