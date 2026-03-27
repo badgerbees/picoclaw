@@ -144,6 +144,9 @@ func (p *Provider) buildRequestBody(
 	if cacheKey, ok := options["prompt_cache_key"].(string); ok && cacheKey != "" {
 		if supportsPromptCacheKey(p.apiBase) {
 			requestBody["prompt_cache_key"] = cacheKey
+			if cacheRetention, ok := options["prompt_cache_retention"].(string); ok && cacheRetention != "" {
+				requestBody["prompt_cache_retention"] = cacheRetention
+			}
 		}
 	}
 
