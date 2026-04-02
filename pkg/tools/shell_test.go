@@ -686,10 +686,17 @@ func TestShellTool_ScriptPreflight(t *testing.T) {
 		want     string
 	}{
 		{
-			name:     "quoted script path validates content",
-			command:  `node "bad.js"`,
-			fileName: "bad.js",
+			name:     "quoted python script path validates content",
+			command:  `python "bad.py"`,
+			fileName: "bad.py",
 			content:  "const value = $DM_JSON;",
+			want:     "exec preflight: detected likely shell variable injection ($DM_JSON)",
+		},
+		{
+			name:     "env-prefixed interpreter validates content",
+			command:  `env PYTHONPATH=/tmp python bad.py`,
+			fileName: "bad.py",
+			content:  "payload = $DM_JSON",
 			want:     "exec preflight: detected likely shell variable injection ($DM_JSON)",
 		},
 		{
@@ -735,6 +742,24 @@ func TestShellTool_ScriptPreflight(t *testing.T) {
 			require.Contains(t, result.ForLLM, tt.want)
 		})
 	}
+}
+
+func TestShellTool_ScriptPreflight_AllowsDirectChainedInterpreter(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "good.py"), []byte("print('ok')"), 0o644); err != nil {
+		t.Fatalf("failed to write test script: %v", err)
+	}
+
+	tool, err := NewExecTool(tmpDir, false)
+	if err != nil {
+		t.Fatalf("unable to configure exec tool: %s", err)
+	}
+
+	result := tool.Execute(context.Background(), map[string]any{
+		"action":  "run",
+		"command": "python good.py && echo ok",
+	})
+	require.NotContains(t, result.ForLLM, "exec preflight:")
 }
 
 // TestShellTool_URLBypassPrevented verifies that a command cannot bypass the workspace

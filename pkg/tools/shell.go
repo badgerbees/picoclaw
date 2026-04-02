@@ -113,6 +113,7 @@ var (
 	}
 
 	scriptPreflightEnvVarPattern = regexp.MustCompile(`\$[A-Z_][A-Z0-9_]{1,}`)
+	envAssignmentPattern         = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	interpreterPipePattern       = regexp.MustCompile(
 		`(?i)(?:^|[|;&]\s*)(?:env\s+)?(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?)\b`,
 	)
@@ -1155,6 +1156,10 @@ func (t *ExecTool) validateScriptFileForShellBleed(command, cwd string) string {
 			continue
 		}
 
+		if !shouldScanScriptForShellBleed(absPath) {
+			continue
+		}
+
 		if first := scriptPreflightEnvVarPattern.Find(content); len(first) > 0 {
 			return fmt.Sprintf(
 				"Command blocked by safety guard (exec preflight: detected likely shell variable injection (%s))",
@@ -1180,13 +1185,13 @@ func extractScriptTargetFromCommand(command string) []string {
 	interpreter := strings.ToLower(filepath.Base(argv[0]))
 	switch {
 	case isPythonInterpreter(interpreter):
-		target := findLastPositionalScriptArg(argv[1:], []string{".py"})
+		target := findFirstPositionalScriptArg(argv[1:], []string{".py"})
 		if target == "" {
 			return nil
 		}
 		return []string{target}
 	case isNodeInterpreter(interpreter):
-		target := findLastPositionalScriptArg(argv[1:], []string{".js"})
+		target := findFirstPositionalScriptArg(argv[1:], []string{".js"})
 		if target == "" {
 			return nil
 		}
@@ -1282,7 +1287,7 @@ func stripEnvPrefix(argv []string) []string {
 			idx++
 			continue
 		}
-		if strings.Contains(token, "=") && !strings.HasPrefix(token, "-") && !strings.ContainsAny(token, "/\\") {
+		if envAssignmentPattern.MatchString(token) && !strings.HasPrefix(token, "-") {
 			idx++
 			continue
 		}
@@ -1302,7 +1307,7 @@ func isNodeInterpreter(token string) bool {
 	return token == "node" || token == "nodejs"
 }
 
-func findLastPositionalScriptArg(tokens []string, suffixes []string) string {
+func findFirstPositionalScriptArg(tokens []string, suffixes []string) string {
 	if len(tokens) == 0 {
 		return ""
 	}
@@ -1355,6 +1360,11 @@ func hasScriptSuffix(token string, suffixes []string) bool {
 	return false
 }
 
+func shouldScanScriptForShellBleed(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".py" || ext == ".pyw"
+}
+
 func shouldFailClosedInterpreterPreflight(command string) bool {
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {
@@ -1367,8 +1377,12 @@ func shouldFailClosedInterpreterPreflight(command string) bool {
 	if interpreterShellWrapperPattern.MatchString(trimmed) {
 		return true
 	}
-	if interpreterPipePattern.MatchString(trimmed) && strings.ContainsAny(trimmed, "|;&") {
-		return true
+	if matches := interpreterPipePattern.FindAllStringIndex(trimmed, -1); len(matches) > 0 {
+		for _, match := range matches {
+			if match[0] > 0 {
+				return true
+			}
+		}
 	}
 
 	return false
