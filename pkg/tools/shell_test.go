@@ -677,6 +677,66 @@ func TestShellTool_FileURISandboxing(t *testing.T) {
 	}
 }
 
+func TestShellTool_ScriptPreflight(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  string
+		fileName string
+		content  string
+		want     string
+	}{
+		{
+			name:     "quoted script path validates content",
+			command:  `node "bad.js"`,
+			fileName: "bad.js",
+			content:  "const value = $DM_JSON;",
+			want:     "exec preflight: detected likely shell variable injection ($DM_JSON)",
+		},
+		{
+			name:     "piped interpreter fails closed",
+			command:  "cat bad.py | python",
+			fileName: "bad.py",
+			content:  "payload = $DM_JSON",
+			want:     "exec preflight: complex interpreter invocation detected",
+		},
+		{
+			name:     "shell wrapped interpreter fails closed",
+			command:  `bash -c "python bad.py"`,
+			fileName: "bad.py",
+			content:  "payload = $DM_JSON",
+			want:     "exec preflight: complex interpreter invocation detected",
+		},
+		{
+			name:     "process substitution fails closed",
+			command:  "python <(cat bad.py)",
+			fileName: "bad.py",
+			content:  "payload = $DM_JSON",
+			want:     "exec preflight: complex interpreter invocation detected",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(tmpDir, tt.fileName), []byte(tt.content), 0o644); err != nil {
+				t.Fatalf("failed to write test script: %v", err)
+			}
+
+			tool, err := NewExecTool(tmpDir, false)
+			if err != nil {
+				t.Fatalf("unable to configure exec tool: %s", err)
+			}
+
+			result := tool.Execute(context.Background(), map[string]any{
+				"action":  "run",
+				"command": tt.command,
+			})
+			require.True(t, result.IsError, "expected script preflight to block %q", tt.command)
+			require.Contains(t, result.ForLLM, tt.want)
+		})
+	}
+}
+
 // TestShellTool_URLBypassPrevented verifies that a command cannot bypass the workspace
 // sandbox by smuggling a real path after a URL that contains the same //path substring.
 // e.g. "echo https://etc/passwd && cat //etc/passwd" must still be blocked.

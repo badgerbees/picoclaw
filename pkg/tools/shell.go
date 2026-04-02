@@ -111,6 +111,11 @@ var (
 		"/dev/stdout":  true,
 		"/dev/stderr":  true,
 	}
+
+	scriptPreflightEnvVarPattern      = regexp.MustCompile(`\$[A-Z_][A-Z0-9_]{1,}`)
+	interpreterPipePattern            = regexp.MustCompile(`(?i)(?:^|[|;&]\s*)(?:env\s+)?(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?)\b`)
+	interpreterShellWrapperPattern    = regexp.MustCompile(`(?i)(?:^|\s)(?:env\s+)?(?:bash|sh|zsh|dash)\b[^\n]*\s-c\s+["']?\s*(?:env\s+)?(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?)\b`)
+	interpreterProcessSubstPattern    = regexp.MustCompile(`(?i)(?:^|\s)(?:env\s+)?(?:python(?:\d+(?:\.\d+)?)?|node(?:js)?)\b[^\n]*<\(`)
 )
 
 func NewExecTool(workingDir string, restrict bool, allowPaths ...[]*regexp.Regexp) (*ExecTool, error) {
@@ -319,6 +324,10 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 
 	if guardError := t.guardCommand(command, cwd); guardError != "" {
 		return ErrorResult(guardError)
+	}
+
+	if preflightError := t.validateScriptFileForShellBleed(command, cwd); preflightError != "" {
+		return ErrorResult(preflightError)
 	}
 
 	// Re-resolve symlinks immediately before execution to shrink the TOCTOU window
@@ -1113,6 +1122,238 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 	}
 
 	return ""
+}
+
+func (t *ExecTool) validateScriptFileForShellBleed(command, cwd string) string {
+	if shouldFailClosedInterpreterPreflight(command) {
+		return "Command blocked by safety guard (exec preflight: complex interpreter invocation detected; refusing to run without script preflight validation. Use a direct `python <file>.py` or `node <file>.js` command.)"
+	}
+
+	targets := extractScriptTargetFromCommand(command)
+	if len(targets) == 0 {
+		return ""
+	}
+
+	for _, relOrAbsPath := range targets {
+		if relOrAbsPath == "" {
+			continue
+		}
+
+		absPath := relOrAbsPath
+		if !filepath.IsAbs(absPath) {
+			absPath = filepath.Join(cwd, relOrAbsPath)
+		}
+
+		content, err := os.ReadFile(absPath)
+		if err != nil || len(content) > 512*1024 {
+			continue
+		}
+
+		if first := scriptPreflightEnvVarPattern.Find(content); len(first) > 0 {
+			return fmt.Sprintf("Command blocked by safety guard (exec preflight: detected likely shell variable injection (%s))", first)
+		}
+	}
+
+	return ""
+}
+
+func extractScriptTargetFromCommand(command string) []string {
+	argv := splitShellArgs(command)
+	if len(argv) == 0 {
+		return nil
+	}
+
+	argv = stripEnvPrefix(argv)
+	if len(argv) == 0 {
+		return nil
+	}
+
+	interpreter := strings.ToLower(filepath.Base(argv[0]))
+	switch {
+	case isPythonInterpreter(interpreter):
+		target := findLastPositionalScriptArg(argv[1:], []string{".py"})
+		if target == "" {
+			return nil
+		}
+		return []string{target}
+	case isNodeInterpreter(interpreter):
+		target := findLastPositionalScriptArg(argv[1:], []string{".js"})
+		if target == "" {
+			return nil
+		}
+		return []string{target}
+	default:
+		return nil
+	}
+}
+
+func splitShellArgs(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	tokens := make([]string, 0, 8)
+	var buf strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+
+	pushToken := func() {
+		if buf.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, buf.String())
+		buf.Reset()
+	}
+
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+		if escaped {
+			buf.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if inSingle {
+			if ch == '\'' {
+				inSingle = false
+				continue
+			}
+			buf.WriteByte(ch)
+			continue
+		}
+		if inDouble {
+			switch ch {
+			case '\\':
+				if i+1 < len(raw) {
+					i++
+					buf.WriteByte(raw[i])
+				}
+			case '"':
+				inDouble = false
+			default:
+				buf.WriteByte(ch)
+			}
+			continue
+		}
+		switch ch {
+		case '\\':
+			if i+1 < len(raw) {
+				next := raw[i+1]
+				if next == ' ' || next == '\\' || next == '"' || next == '\'' || next == '$' || next == '`' {
+					escaped = true
+					continue
+				}
+			}
+			buf.WriteByte(ch)
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case ' ', '\t', '\n', '\r':
+			pushToken()
+		default:
+			buf.WriteByte(ch)
+		}
+	}
+
+	if escaped || inSingle || inDouble {
+		return nil
+	}
+	pushToken()
+	return tokens
+}
+
+func stripEnvPrefix(argv []string) []string {
+	idx := 0
+	for idx < len(argv) {
+		token := argv[idx]
+		lower := strings.ToLower(token)
+		if lower == "env" {
+			idx++
+			continue
+		}
+		if strings.Contains(token, "=") && !strings.HasPrefix(token, "-") && !strings.ContainsAny(token, "/\\") {
+			idx++
+			continue
+		}
+		break
+	}
+	if idx >= len(argv) {
+		return nil
+	}
+	return argv[idx:]
+}
+
+func isPythonInterpreter(token string) bool {
+	return token == "python" || token == "python2" || token == "python3" || strings.HasPrefix(token, "python")
+}
+
+func isNodeInterpreter(token string) bool {
+	return token == "node" || token == "nodejs"
+}
+
+func findLastPositionalScriptArg(tokens []string, suffixes []string) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	for i := 0; i < len(tokens); i++ {
+		token := tokens[i]
+		if token == "--" {
+			if i+1 < len(tokens) && hasScriptSuffix(tokens[i+1], suffixes) {
+				return tokens[i+1]
+			}
+			continue
+		}
+		if token == "-c" || token == "-m" || token == "-e" || token == "-p" || token == "--eval" || token == "--print" {
+			return ""
+		}
+		if token == "-W" || token == "-X" || token == "-Q" || token == "--check-hash-based-pycs" || token == "-r" || token == "--require" || token == "--import" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(token, "-W") || strings.HasPrefix(token, "-X") || strings.HasPrefix(token, "-Q") || strings.HasPrefix(token, "-r") || strings.HasPrefix(token, "-e") || strings.HasPrefix(token, "-p") || strings.HasPrefix(token, "-c") {
+			continue
+		}
+		if strings.HasPrefix(token, "--require=") || strings.HasPrefix(token, "--import=") || strings.HasPrefix(token, "--check-hash-based-pycs=") || strings.HasPrefix(token, "--eval=") || strings.HasPrefix(token, "--print=") {
+			continue
+		}
+		if hasScriptSuffix(token, suffixes) {
+			return token
+		}
+	}
+
+	return ""
+}
+
+func hasScriptSuffix(token string, suffixes []string) bool {
+	lower := strings.ToLower(token)
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldFailClosedInterpreterPreflight(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return false
+	}
+
+	if interpreterProcessSubstPattern.MatchString(trimmed) {
+		return true
+	}
+	if interpreterShellWrapperPattern.MatchString(trimmed) {
+		return true
+	}
+	if interpreterPipePattern.MatchString(trimmed) && strings.ContainsAny(trimmed, "|;&") {
+		return true
+	}
+
+	return false
 }
 
 func (t *ExecTool) SetTimeout(timeout time.Duration) {
