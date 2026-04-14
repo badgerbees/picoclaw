@@ -258,7 +258,12 @@ func (p *Provider) ChatStream(
 	requestBody := p.buildRequestBody(messages, tools, model, options)
 	requestBody["stream"] = true
 	if supportsStreamingUsage(p.apiBase) {
-		requestBody["stream_options"] = map[string]any{"include_usage": true}
+		streamOptions := map[string]any{}
+		if existing, ok := requestBody["stream_options"].(map[string]any); ok {
+			streamOptions = maps.Clone(existing)
+		}
+		streamOptions["include_usage"] = true
+		requestBody["stream_options"] = streamOptions
 	}
 
 	jsonData, err := json.Marshal(requestBody)
@@ -474,12 +479,7 @@ func (p *Provider) SupportsNativeSearch() bool {
 }
 
 func isNativeSearchHost(apiBase string) bool {
-	u, err := url.Parse(apiBase)
-	if err != nil {
-		return false
-	}
-	host := u.Hostname()
-	return host == "api.openai.com" || strings.HasSuffix(host, ".openai.azure.com")
+	return isOpenAINativeBaseURL(apiBase)
 }
 
 // isOpenAINativeBaseURL reports whether the given API base is the OpenAI or

@@ -991,7 +991,7 @@ func chatWithCacheKey(t *testing.T, apiBase string) map[string]any {
 	return requestBody
 }
 
-func chatStreamWithRequestBody(t *testing.T, apiBase string) map[string]any {
+func chatStreamWithRequestBody(t *testing.T, apiBase string, opts ...Option) map[string]any {
 	t.Helper()
 	var requestBody map[string]any
 
@@ -1016,7 +1016,7 @@ func chatStreamWithRequestBody(t *testing.T, apiBase string) map[string]any {
 	}))
 	defer server.Close()
 
-	p := NewProvider("key", server.URL, "")
+	p := NewProvider("key", server.URL, "", opts...)
 	p.apiBase = apiBase
 	p.httpClient = &http.Client{
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
@@ -1051,6 +1051,26 @@ func TestProviderChatStream_IncludesUsageForOpenAI(t *testing.T) {
 	streamOptions, ok := body["stream_options"].(map[string]any)
 	if !ok {
 		t.Fatalf("stream_options = %T, want map[string]any", body["stream_options"])
+	}
+	if got := streamOptions["include_usage"]; got != true {
+		t.Fatalf("stream_options.include_usage = %v, want true", got)
+	}
+}
+
+func TestProviderChatStream_PreservesExistingStreamOptions(t *testing.T) {
+	body := chatStreamWithRequestBody(
+		t,
+		"https://api.openai.com/v1",
+		WithExtraBody(map[string]any{
+			"stream_options": map[string]any{"custom_flag": true},
+		}),
+	)
+	streamOptions, ok := body["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options = %T, want map[string]any", body["stream_options"])
+	}
+	if got := streamOptions["custom_flag"]; got != true {
+		t.Fatalf("stream_options.custom_flag = %v, want true", got)
 	}
 	if got := streamOptions["include_usage"]; got != true {
 		t.Fatalf("stream_options.include_usage = %v, want true", got)
