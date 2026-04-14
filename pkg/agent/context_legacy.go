@@ -61,6 +61,16 @@ func (m *legacyContextManager) Ingest(_ context.Context, _ *IngestRequest) error
 	return nil
 }
 
+func (m *legacyContextManager) Clear(_ context.Context, sessionKey string) error {
+	agent := m.al.registry.GetDefaultAgent()
+	if agent == nil || agent.Sessions == nil {
+		return fmt.Errorf("sessions not initialized")
+	}
+	agent.Sessions.SetHistory(sessionKey, []providers.Message{})
+	agent.Sessions.SetSummary(sessionKey, "")
+	return agent.Sessions.Save(sessionKey)
+}
+
 // maybeSummarize triggers summarization if the session history exceeds thresholds.
 // It runs asynchronously in a goroutine.
 func (m *legacyContextManager) maybeSummarize(sessionKey string) {
@@ -373,7 +383,7 @@ func (m *legacyContextManager) summarizeBatch(
 func (m *legacyContextManager) estimateTokens(messages []providers.Message) int {
 	total := 0
 	for _, msg := range messages {
-		total += estimateMessageTokens(msg)
+		total += EstimateMessageTokens(msg)
 	}
 	return total
 }

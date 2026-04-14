@@ -5,11 +5,21 @@ import {
   writeStoredSessionId,
 } from "@/features/chat/state"
 
+export interface ChatAttachment {
+  type: "image"
+  url: string
+  filename?: string
+}
+
+export type AssistantMessageKind = "normal" | "thought"
+
 export interface ChatMessage {
   id: string
   role: "user" | "assistant"
   content: string
   timestamp: number | string
+  kind?: AssistantMessageKind
+  attachments?: ChatAttachment[]
 }
 
 export type ConnectionState =

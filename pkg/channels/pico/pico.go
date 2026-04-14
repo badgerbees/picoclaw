@@ -2,6 +2,7 @@ package pico
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -30,6 +31,21 @@ type picoConn struct {
 	cancel    context.CancelFunc // cancels per-connection goroutines (e.g. pingLoop)
 }
 
+var allowedInlineImageMIMETypes = map[string]struct{}{
+	"image/jpeg": {},
+	"image/png":  {},
+	"image/gif":  {},
+	"image/webp": {},
+	"image/bmp":  {},
+}
+
+func outboundMessageIsThought(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(metadata["message_kind"]), MessageKindThought)
+}
+
 // writeJSON sends a JSON message to the connection with write locking.
 func (pc *picoConn) writeJSON(v any) error {
 	if pc.closed.Load() {
@@ -54,7 +70,8 @@ func (pc *picoConn) close() {
 // It serves as the reference implementation for all optional capability interfaces.
 type PicoChannel struct {
 	*channels.BaseChannel
-	config             config.PicoConfig
+	bc                 *config.Channel
+	config             *config.PicoSettings
 	upgrader           websocket.Upgrader
 	connections        map[string]*picoConn            // connID -> *picoConn
 	sessionConnections map[string]map[string]*picoConn // sessionID -> connID -> *picoConn
@@ -64,12 +81,16 @@ type PicoChannel struct {
 }
 
 // NewPicoChannel creates a new Pico Protocol channel.
-func NewPicoChannel(cfg config.PicoConfig, messageBus *bus.MessageBus) (*PicoChannel, error) {
+func NewPicoChannel(
+	bc *config.Channel,
+	cfg *config.PicoSettings,
+	messageBus *bus.MessageBus,
+) (*PicoChannel, error) {
 	if cfg.Token.String() == "" {
 		return nil, fmt.Errorf("pico token is required")
 	}
 
-	base := channels.NewBaseChannel("pico", cfg, messageBus, cfg.AllowFrom)
+	base := channels.NewBaseChannel("pico", cfg, messageBus, bc.AllowFrom)
 
 	allowOrigins := cfg.AllowOrigins
 	checkOrigin := func(r *http.Request) bool {
@@ -87,6 +108,7 @@ func NewPicoChannel(cfg config.PicoConfig, messageBus *bus.MessageBus) (*PicoCha
 
 	return &PicoChannel{
 		BaseChannel: base,
+		bc:          bc,
 		config:      cfg,
 		upgrader: websocket.Upgrader{
 			CheckOrigin:     checkOrigin,
@@ -238,9 +260,11 @@ func (c *PicoChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]stri
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}
+	isThought := outboundMessageIsThought(msg.Metadata)
 
 	outMsg := newMessage(TypeMessageCreate, map[string]any{
-		"content": msg.Content,
+		PayloadKeyContent: msg.Content,
+		PayloadKeyThought: isThought,
 	})
 
 	return nil, c.broadcastToSession(msg.ChatID, outMsg)
@@ -271,16 +295,17 @@ func (c *PicoChannel) StartTyping(ctx context.Context, chatID string) (func(), e
 // It sends a placeholder message via the Pico Protocol that will later be
 // edited to the actual response via EditMessage (channels.MessageEditor).
 func (c *PicoChannel) SendPlaceholder(ctx context.Context, chatID string) (string, error) {
-	if !c.config.Placeholder.Enabled {
+	if !c.bc.Placeholder.Enabled {
 		return "", nil
 	}
 
-	text := c.config.Placeholder.GetRandomText()
+	text := c.bc.Placeholder.GetRandomText()
 
 	msgID := uuid.New().String()
 	outMsg := newMessage(TypeMessageCreate, map[string]any{
-		"content":    text,
-		"message_id": msgID,
+		PayloadKeyContent: text,
+		PayloadKeyThought: false,
+		"message_id":      msgID,
 	})
 
 	if err := c.broadcastToSession(chatID, outMsg); err != nil {
@@ -516,6 +541,9 @@ func (c *PicoChannel) handleMessage(pc *picoConn, msg PicoMessage) {
 	case TypeMessageSend:
 		c.handleMessageSend(pc, msg)
 
+	case TypeMediaSend:
+		c.handleMessageSend(pc, msg)
+
 	default:
 		errMsg := newError("unknown_type", fmt.Sprintf("unknown message type: %s", msg.Type))
 		pc.writeJSON(errMsg)
@@ -525,8 +553,19 @@ func (c *PicoChannel) handleMessage(pc *picoConn, msg PicoMessage) {
 // handleMessageSend processes an inbound message.send from a client.
 func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 	content, _ := msg.Payload["content"].(string)
-	if strings.TrimSpace(content) == "" {
-		errMsg := newError("empty_content", "message content is empty")
+	media, err := parseInlineImageMedia(msg.Payload)
+	if err != nil {
+		errMsg := newErrorWithPayload("invalid_media", err.Error(), map[string]any{
+			"request_id": msg.ID,
+		})
+		pc.writeJSON(errMsg)
+		return
+	}
+
+	if strings.TrimSpace(content) == "" && len(media) == 0 {
+		errMsg := newErrorWithPayload("empty_content", "message content is empty", map[string]any{
+			"request_id": msg.ID,
+		})
 		pc.writeJSON(errMsg)
 		return
 	}
@@ -550,6 +589,7 @@ func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 	logger.DebugCF("pico", "Received message", map[string]any{
 		"session_id": sessionID,
 		"preview":    truncate(content, 50),
+		"media":      len(media),
 	})
 
 	sender := bus.SenderInfo{
@@ -562,7 +602,7 @@ func (c *PicoChannel) handleMessageSend(pc *picoConn, msg PicoMessage) {
 		return
 	}
 
-	c.HandleMessage(c.ctx, peer, msg.ID, senderID, chatID, content, nil, metadata, sender)
+	c.HandleMessage(c.ctx, peer, msg.ID, senderID, chatID, content, media, metadata, sender)
 }
 
 // truncate truncates a string to maxLen runes.
@@ -572,4 +612,100 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen]) + "..."
+}
+
+func parseInlineImageMedia(payload map[string]any) ([]string, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
+
+	raw, ok := payload["media"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+
+	switch values := raw.(type) {
+	case []any:
+		media := make([]string, 0, len(values))
+		for i, item := range values {
+			value, err := inlineImageValue(item)
+			if err != nil {
+				return nil, fmt.Errorf("media[%d]: %w", i, err)
+			}
+			if err := validateInlineImageDataURL(value); err != nil {
+				return nil, fmt.Errorf("media[%d]: %w", i, err)
+			}
+			media = append(media, value)
+		}
+		return media, nil
+	case []string:
+		media := make([]string, 0, len(values))
+		for i, value := range values {
+			value = strings.TrimSpace(value)
+			if err := validateInlineImageDataURL(value); err != nil {
+				return nil, fmt.Errorf("media[%d]: %w", i, err)
+			}
+			media = append(media, value)
+		}
+		return media, nil
+	case string:
+		value := strings.TrimSpace(values)
+		if err := validateInlineImageDataURL(value); err != nil {
+			return nil, err
+		}
+		return []string{value}, nil
+	default:
+		return nil, fmt.Errorf("media must be a string or array of strings")
+	}
+}
+
+func inlineImageValue(item any) (string, error) {
+	switch value := item.(type) {
+	case string:
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", fmt.Errorf("image payload is empty")
+		}
+		return value, nil
+	case map[string]any:
+		for _, key := range []string{"url", "data_url"} {
+			if raw, ok := value[key].(string); ok && strings.TrimSpace(raw) != "" {
+				return strings.TrimSpace(raw), nil
+			}
+		}
+		return "", fmt.Errorf("image payload must include url or data_url")
+	default:
+		return "", fmt.Errorf("image payload must be a string or object")
+	}
+}
+
+func validateInlineImageDataURL(mediaURL string) error {
+	if mediaURL == "" {
+		return fmt.Errorf("image payload is empty")
+	}
+	if !strings.HasPrefix(mediaURL, "data:image/") {
+		return fmt.Errorf("only inline image data URLs are supported")
+	}
+
+	header, data, found := strings.Cut(mediaURL, ",")
+	if !found || strings.TrimSpace(data) == "" {
+		return fmt.Errorf("image data URL is malformed")
+	}
+	if !strings.Contains(header, ";base64") {
+		return fmt.Errorf("image data URL must be base64 encoded")
+	}
+	mimeType, _, _ := strings.Cut(strings.TrimPrefix(header, "data:"), ";")
+	if _, ok := allowedInlineImageMIMETypes[mimeType]; !ok {
+		return fmt.Errorf("unsupported image format: %s", mimeType)
+	}
+
+	data = strings.TrimSpace(data)
+	if base64.StdEncoding.DecodedLen(len(data)) > config.DefaultMaxMediaSize {
+		return fmt.Errorf("image exceeds %d byte limit", config.DefaultMaxMediaSize)
+	}
+	if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+		return fmt.Errorf("invalid base64 image data")
+	}
+
+	return nil
 }
